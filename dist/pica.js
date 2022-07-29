@@ -1925,7 +1925,9 @@ var DEFAULT_RESIZE_OPTS = {
   filter: 'mks2013',
   unsharpAmount: 0,
   unsharpRadius: 0.0,
-  unsharpThreshold: 0
+  unsharpThreshold: 0,
+  onTileResized:  function () {
+  }
 };
 var CAN_NEW_IMAGE_DATA = false;
 var CAN_CREATE_IMAGE_BITMAP = false;
@@ -2243,6 +2245,7 @@ Pica.prototype.__tileAndResize = function (from, to, opts) {
 
         return _this3.__invokeResize(tileOpts, opts);
       }).then(function (result) {
+        opts.onTileResized(result);
         if (opts.canceled) return opts.cancelToken;
         stageEnv.srcImageData = null;
         return _this3.__landTileData(tile, result, stageEnv);

@@ -51,7 +51,9 @@ const DEFAULT_RESIZE_OPTS = {
   filter:           'mks2013',
   unsharpAmount:    0,
   unsharpRadius:    0.0,
-  unsharpThreshold: 0
+  unsharpThreshold: 0,
+  onTileResized:  function () {
+  }
 };
 
 let CAN_NEW_IMAGE_DATA            = false;
@@ -401,6 +403,7 @@ Pica.prototype.__tileAndResize = function (from, to, opts) {
         return this.__invokeResize(tileOpts, opts);
       })
       .then(result => {
+        opts.onTileResized(result);
         if (opts.canceled) return opts.cancelToken;
         stageEnv.srcImageData = null;
         return this.__landTileData(tile, result, stageEnv);
