@@ -5,7 +5,699 @@ https://github.com/nodeca/pica
 
 */
 
-(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.pica = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({1:[function(_dereq_,module,exports){
+(function(f){if(typeof exports==="object"&&typeof module!=="undefined"){module.exports=f()}else if(typeof define==="function"&&define.amd){define([],f)}else{var g;if(typeof window!=="undefined"){g=window}else if(typeof global!=="undefined"){g=global}else if(typeof self!=="undefined"){g=self}else{g=this}g.pica = f()}})(function(){var define,module,exports;return (function(){function r(e,n,t){function o(i,f){if(!n[i]){if(!e[i]){var c="function"==typeof require&&require;if(!f&&c)return c(i,!0);if(u)return u(i,!0);var a=new Error("Cannot find module '"+i+"'");throw a.code="MODULE_NOT_FOUND",a}var p=n[i]={exports:{}};e[i][0].call(p.exports,function(r){var n=e[i][1][r];return o(n||r)},p,p.exports,r,e,n,t)}return n[i].exports}for(var u="function"==typeof require&&require,i=0;i<t.length;i++)o(t[i]);return o}return r})()({"/index.js":[function(_dereq_,module,exports){
+'use strict';
+
+function _slicedToArray(arr, i) { return _arrayWithHoles(arr) || _iterableToArrayLimit(arr, i) || _unsupportedIterableToArray(arr, i) || _nonIterableRest(); }
+
+function _nonIterableRest() { throw new TypeError("Invalid attempt to destructure non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); }
+
+function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o === "string") return _arrayLikeToArray(o, minLen); var n = Object.prototype.toString.call(o).slice(8, -1); if (n === "Object" && o.constructor) n = o.constructor.name; if (n === "Map" || n === "Set") return Array.from(o); if (n === "Arguments" || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)) return _arrayLikeToArray(o, minLen); }
+
+function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
+
+function _iterableToArrayLimit(arr, i) { var _i = arr == null ? null : typeof Symbol !== "undefined" && arr[Symbol.iterator] || arr["@@iterator"]; if (_i == null) return; var _arr = []; var _n = true; var _d = false; var _s, _e; try { for (_i = _i.call(arr); !(_n = (_s = _i.next()).done); _n = true) { _arr.push(_s.value); if (i && _arr.length === i) break; } } catch (err) { _d = true; _e = err; } finally { try { if (!_n && _i["return"] != null) _i["return"](); } finally { if (_d) throw _e; } } return _arr; }
+
+function _arrayWithHoles(arr) { if (Array.isArray(arr)) return arr; }
+
+var assign = _dereq_('object-assign');
+
+var webworkify = _dereq_('webworkify');
+
+var MathLib = _dereq_('./lib/mathlib');
+
+var Pool = _dereq_('./lib/pool');
+
+var utils = _dereq_('./lib/utils');
+
+var worker = _dereq_('./lib/worker');
+
+var createStages = _dereq_('./lib/stepper');
+
+var createRegions = _dereq_('./lib/tiler');
+
+var filter_info = _dereq_('./lib/mm_resize/resize_filter_info'); // Deduplicate pools & limiters with the same configs
+// when user creates multiple pica instances.
+
+
+var singletones = {};
+var NEED_SAFARI_FIX = false;
+
+try {
+  if (typeof navigator !== 'undefined' && navigator.userAgent) {
+    NEED_SAFARI_FIX = navigator.userAgent.indexOf('Safari') >= 0;
+  }
+} catch (e) {}
+
+var concurrency = 1;
+
+if (typeof navigator !== 'undefined') {
+  concurrency = Math.min(navigator.hardwareConcurrency || 1, 4);
+}
+
+var DEFAULT_PICA_OPTS = {
+  tile: 1024,
+  concurrency: concurrency,
+  features: ['js', 'wasm', 'ww'],
+  idle: 2000,
+  createCanvas: function createCanvas(width, height) {
+    var tmpCanvas = document.createElement('canvas');
+    tmpCanvas.width = width;
+    tmpCanvas.height = height;
+    return tmpCanvas;
+  }
+};
+var DEFAULT_RESIZE_OPTS = {
+  filter: 'mks2013',
+  unsharpAmount: 0,
+  unsharpRadius: 0.0,
+  unsharpThreshold: 0,
+  onTileResized: function onTileResized() {
+    this.debug('tile was resized');
+  }
+};
+var CAN_NEW_IMAGE_DATA = false;
+var CAN_CREATE_IMAGE_BITMAP = false;
+var CAN_USE_CANVAS_GET_IMAGE_DATA = false;
+var CAN_USE_OFFSCREEN_CANVAS = false;
+var CAN_USE_CIB_REGION_FOR_IMAGE = false;
+
+function workerFabric() {
+  return {
+    value: webworkify(worker),
+    destroy: function destroy() {
+      this.value.terminate();
+
+      if (typeof window !== 'undefined') {
+        var url = window.URL || window.webkitURL || window.mozURL || window.msURL;
+
+        if (url && url.revokeObjectURL && this.value.objectURL) {
+          url.revokeObjectURL(this.value.objectURL);
+        }
+      }
+    }
+  };
+} ////////////////////////////////////////////////////////////////////////////////
+// API methods
+
+
+function Pica(options) {
+  if (!(this instanceof Pica)) return new Pica(options);
+  this.options = assign({}, DEFAULT_PICA_OPTS, options || {});
+  var limiter_key = "lk_".concat(this.options.concurrency); // Share limiters to avoid multiple parallel workers when user creates
+  // multiple pica instances.
+
+  this.__limit = singletones[limiter_key] || utils.limiter(this.options.concurrency);
+  if (!singletones[limiter_key]) singletones[limiter_key] = this.__limit; // List of supported features, according to options & browser/node.js
+
+  this.features = {
+    js: false,
+    // pure JS implementation, can be disabled for testing
+    wasm: false,
+    // webassembly implementation for heavy functions
+    cib: false,
+    // resize via createImageBitmap (only FF at this moment)
+    ww: false // webworkers
+
+  };
+  this.__workersPool = null; // Store requested features for webworkers
+
+  this.__requested_features = [];
+  this.__mathlib = null;
+}
+
+Pica.prototype.init = function () {
+  var _this = this;
+
+  if (this.__initPromise) return this.__initPromise; // Test if we can create ImageData without canvas and memory copy
+
+  if (typeof ImageData !== 'undefined' && typeof Uint8ClampedArray !== 'undefined') {
+    try {
+      /* eslint-disable no-new */
+      new ImageData(new Uint8ClampedArray(400), 10, 10);
+      CAN_NEW_IMAGE_DATA = true;
+    } catch (__) {}
+  } // ImageBitmap can be effective in 2 places:
+  //
+  // 1. Threaded jpeg unpack (basic)
+  // 2. Built-in resize (blocked due problem in chrome, see issue #89)
+  //
+  // For basic use we also need ImageBitmap wo support .close() method,
+  // see https://developer.mozilla.org/ru/docs/Web/API/ImageBitmap
+
+
+  if (typeof ImageBitmap !== 'undefined') {
+    if (ImageBitmap.prototype && ImageBitmap.prototype.close) {
+      CAN_CREATE_IMAGE_BITMAP = true;
+    } else {
+      this.debug('ImageBitmap does not support .close(), disabled');
+    }
+  }
+
+  var features = this.options.features.slice();
+
+  if (features.indexOf('all') >= 0) {
+    features = ['cib', 'wasm', 'js', 'ww'];
+  }
+
+  this.__requested_features = features;
+  this.__mathlib = new MathLib(features); // Check WebWorker support if requested
+
+  if (features.indexOf('ww') >= 0) {
+    if (typeof window !== 'undefined' && 'Worker' in window) {
+      // IE <= 11 don't allow to create webworkers from string. We should check it.
+      // https://connect.microsoft.com/IE/feedback/details/801810/web-workers-from-blob-urls-in-ie-10-and-11
+      try {
+        var wkr = _dereq_('webworkify')(function () {});
+
+        wkr.terminate();
+        this.features.ww = true; // pool uniqueness depends on pool config + webworker config
+
+        var wpool_key = "wp_".concat(JSON.stringify(this.options));
+
+        if (singletones[wpool_key]) {
+          this.__workersPool = singletones[wpool_key];
+        } else {
+          this.__workersPool = new Pool(workerFabric, this.options.idle);
+          singletones[wpool_key] = this.__workersPool;
+        }
+      } catch (__) {}
+    }
+  }
+
+  var initMath = this.__mathlib.init().then(function (mathlib) {
+    // Copy detected features
+    assign(_this.features, mathlib.features);
+  });
+
+  var checkCibResize;
+
+  if (!CAN_CREATE_IMAGE_BITMAP) {
+    checkCibResize = Promise.resolve(false);
+  } else {
+    checkCibResize = utils.cib_support(this.options.createCanvas).then(function (status) {
+      if (_this.features.cib && features.indexOf('cib') < 0) {
+        _this.debug('createImageBitmap() resize supported, but disabled by config');
+
+        return;
+      }
+
+      if (features.indexOf('cib') >= 0) _this.features.cib = status;
+    });
+  }
+
+  CAN_USE_CANVAS_GET_IMAGE_DATA = utils.can_use_canvas(this.options.createCanvas);
+  var checkOffscreenCanvas;
+
+  if (CAN_CREATE_IMAGE_BITMAP && CAN_NEW_IMAGE_DATA && features.indexOf('ww') !== -1) {
+    checkOffscreenCanvas = utils.worker_offscreen_canvas_support();
+  } else {
+    checkOffscreenCanvas = Promise.resolve(false);
+  }
+
+  checkOffscreenCanvas = checkOffscreenCanvas.then(function (result) {
+    CAN_USE_OFFSCREEN_CANVAS = result;
+  }); // we use createImageBitmap to crop image data and pass it to workers,
+  // so need to check whether function works correctly;
+  // https://bugs.chromium.org/p/chromium/issues/detail?id=1220671
+
+  var checkCibRegion = utils.cib_can_use_region().then(function (result) {
+    CAN_USE_CIB_REGION_FOR_IMAGE = result;
+  }); // Init math lib. That's async because can load some
+
+  this.__initPromise = Promise.all([initMath, checkCibResize, checkOffscreenCanvas, checkCibRegion]).then(function () {
+    return _this;
+  });
+  return this.__initPromise;
+}; // Call resizer in webworker or locally, depending on config
+
+
+Pica.prototype.__invokeResize = function (tileOpts, opts) {
+  var _this2 = this;
+
+  // Share cache between calls:
+  //
+  // - wasm instance
+  // - wasm memory object
+  //
+  opts.__mathCache = opts.__mathCache || {};
+  return Promise.resolve().then(function () {
+    if (!_this2.features.ww) {
+      // not possible to have ImageBitmap here if user disabled WW
+      return {
+        data: _this2.__mathlib.resizeAndUnsharp(tileOpts, opts.__mathCache)
+      };
+    }
+
+    return new Promise(function (resolve, reject) {
+      var w = _this2.__workersPool.acquire();
+
+      if (opts.cancelToken) opts.cancelToken["catch"](function (err) {
+        return reject(err);
+      });
+
+      w.value.onmessage = function (ev) {
+        w.release();
+        if (ev.data.err) reject(ev.data.err);else resolve(ev.data);
+      };
+
+      var transfer = [];
+      if (tileOpts.src) transfer.push(tileOpts.src.buffer);
+      if (tileOpts.srcBitmap) transfer.push(tileOpts.srcBitmap);
+      w.value.postMessage({
+        opts: tileOpts,
+        features: _this2.__requested_features,
+        preload: {
+          wasm_nodule: _this2.__mathlib.__
+        }
+      }, transfer);
+    });
+  });
+}; // this function can return promise if createImageBitmap is used
+
+
+Pica.prototype.__extractTileData = function (tile, from, opts, stageEnv, extractTo) {
+  if (this.features.ww && CAN_USE_OFFSCREEN_CANVAS && ( // createImageBitmap doesn't work for images (Image, ImageBitmap) with Exif orientation in Chrome,
+  // can use canvas because canvas doesn't have orientation;
+  // see https://bugs.chromium.org/p/chromium/issues/detail?id=1220671
+  utils.isCanvas(from) || CAN_USE_CIB_REGION_FOR_IMAGE)) {
+    this.debug('Create tile for OffscreenCanvas');
+    return createImageBitmap(stageEnv.srcImageBitmap || from, tile.x, tile.y, tile.width, tile.height).then(function (bitmap) {
+      extractTo.srcBitmap = bitmap;
+      return extractTo;
+    });
+  } // Extract tile RGBA buffer, depending on input type
+
+
+  if (utils.isCanvas(from)) {
+    if (!stageEnv.srcCtx) stageEnv.srcCtx = from.getContext('2d'); // If input is Canvas - extract region data directly
+
+    this.debug('Get tile pixel data');
+    extractTo.src = stageEnv.srcCtx.getImageData(tile.x, tile.y, tile.width, tile.height).data;
+    return extractTo;
+  } // If input is Image or decoded to ImageBitmap,
+  // draw region to temporary canvas and extract data from it
+  //
+  // Note! Attempt to reuse this canvas causes significant slowdown in chrome
+  //
+
+
+  this.debug('Draw tile imageBitmap/image to temporary canvas');
+  var tmpCanvas = this.options.createCanvas(tile.width, tile.height);
+  var tmpCtx = tmpCanvas.getContext('2d');
+  tmpCtx.globalCompositeOperation = 'copy';
+  tmpCtx.drawImage(stageEnv.srcImageBitmap || from, tile.x, tile.y, tile.width, tile.height, 0, 0, tile.width, tile.height);
+  this.debug('Get tile pixel data');
+  extractTo.src = tmpCtx.getImageData(0, 0, tile.width, tile.height).data; // Safari 12 workaround
+  // https://github.com/nodeca/pica/issues/199
+
+  tmpCanvas.width = tmpCanvas.height = 0;
+  return extractTo;
+};
+
+Pica.prototype.__landTileData = function (tile, result, stageEnv) {
+  var toImageData;
+  this.debug('Convert raw rgba tile result to ImageData');
+
+  if (result.bitmap) {
+    stageEnv.toCtx.drawImage(result.bitmap, tile.toX, tile.toY);
+    return null;
+  }
+
+  if (CAN_NEW_IMAGE_DATA) {
+    // this branch is for modern browsers
+    // If `new ImageData()` & Uint8ClampedArray suported
+    toImageData = new ImageData(new Uint8ClampedArray(result.data), tile.toWidth, tile.toHeight);
+  } else {
+    // fallback for `node-canvas` and old browsers
+    // (IE11 has ImageData but does not support `new ImageData()`)
+    toImageData = stageEnv.toCtx.createImageData(tile.toWidth, tile.toHeight);
+
+    if (toImageData.data.set) {
+      toImageData.data.set(result.data);
+    } else {
+      // IE9 don't have `.set()`
+      for (var i = toImageData.data.length - 1; i >= 0; i--) {
+        toImageData.data[i] = result.data[i];
+      }
+    }
+  }
+
+  this.debug('Draw tile');
+
+  if (NEED_SAFARI_FIX) {
+    // Safari draws thin white stripes between tiles without this fix
+    stageEnv.toCtx.putImageData(toImageData, tile.toX, tile.toY, tile.toInnerX - tile.toX, tile.toInnerY - tile.toY, tile.toInnerWidth + 1e-5, tile.toInnerHeight + 1e-5);
+  } else {
+    stageEnv.toCtx.putImageData(toImageData, tile.toX, tile.toY, tile.toInnerX - tile.toX, tile.toInnerY - tile.toY, tile.toInnerWidth, tile.toInnerHeight);
+  }
+
+  return null;
+};
+
+Pica.prototype.__tileAndResize = function (from, to, opts) {
+  var _this3 = this;
+
+  var stageEnv = {
+    srcCtx: null,
+    srcImageBitmap: null,
+    isImageBitmapReused: false,
+    toCtx: null
+  };
+
+  var processTile = function processTile(tile) {
+    return _this3.__limit(function () {
+      if (opts.canceled) return opts.cancelToken;
+      var tileOpts = {
+        width: tile.width,
+        height: tile.height,
+        toWidth: tile.toWidth,
+        toHeight: tile.toHeight,
+        scaleX: tile.scaleX,
+        scaleY: tile.scaleY,
+        offsetX: tile.offsetX,
+        offsetY: tile.offsetY,
+        filter: opts.filter,
+        unsharpAmount: opts.unsharpAmount,
+        unsharpRadius: opts.unsharpRadius,
+        unsharpThreshold: opts.unsharpThreshold
+      };
+
+      _this3.debug('Invoke resize math');
+
+      return Promise.resolve(tileOpts).then(function (tileOpts) {
+        return _this3.__extractTileData(tile, from, opts, stageEnv, tileOpts);
+      }).then(function (tileOpts) {
+        _this3.debug('Invoke resize math');
+
+        return _this3.__invokeResize(tileOpts, opts);
+      }).then(function (result) {
+        opts.onTileResized(result);
+        if (opts.canceled) return opts.cancelToken;
+        stageEnv.srcImageData = null;
+        return _this3.__landTileData(tile, result, stageEnv);
+      });
+    });
+  }; // Need to normalize data source first. It can be canvas or image.
+  // If image - try to decode in background if possible
+
+
+  return Promise.resolve().then(function () {
+    stageEnv.toCtx = to.getContext('2d');
+    if (utils.isCanvas(from)) return null;
+
+    if (utils.isImageBitmap(from)) {
+      stageEnv.srcImageBitmap = from;
+      stageEnv.isImageBitmapReused = true;
+      return null;
+    }
+
+    if (utils.isImage(from)) {
+      // try do decode image in background for faster next operations;
+      // if we're using offscreen canvas, cib is called per tile, so not needed here
+      if (!CAN_CREATE_IMAGE_BITMAP) return null;
+
+      _this3.debug('Decode image via createImageBitmap');
+
+      return createImageBitmap(from).then(function (imageBitmap) {
+        stageEnv.srcImageBitmap = imageBitmap;
+      }) // Suppress error to use fallback, if method fails
+      // https://github.com/nodeca/pica/issues/190
+
+      /* eslint-disable no-unused-vars */
+      ["catch"](function (e) {
+        return null;
+      });
+    }
+
+    throw new Error('Pica: ".from" should be Image, Canvas or ImageBitmap');
+  }).then(function () {
+    if (opts.canceled) return opts.cancelToken;
+
+    _this3.debug('Calculate tiles'); //
+    // Here we are with "normalized" source,
+    // follow to tiling
+    //
+
+
+    var regions = createRegions({
+      width: opts.width,
+      height: opts.height,
+      srcTileSize: _this3.options.tile,
+      toWidth: opts.toWidth,
+      toHeight: opts.toHeight,
+      destTileBorder: opts.__destTileBorder
+    });
+    var jobs = regions.map(function (tile) {
+      return processTile(tile);
+    });
+
+    function cleanup(stageEnv) {
+      if (stageEnv.srcImageBitmap) {
+        if (!stageEnv.isImageBitmapReused) stageEnv.srcImageBitmap.close();
+        stageEnv.srcImageBitmap = null;
+      }
+    }
+
+    _this3.debug('Process tiles');
+
+    return Promise.all(jobs).then(function () {
+      _this3.debug('Finished!');
+
+      cleanup(stageEnv);
+      return to;
+    }, function (err) {
+      cleanup(stageEnv);
+      throw err;
+    });
+  });
+};
+
+Pica.prototype.__processStages = function (stages, from, to, opts) {
+  var _this4 = this;
+
+  if (opts.canceled) return opts.cancelToken;
+
+  var _stages$shift = stages.shift(),
+      _stages$shift2 = _slicedToArray(_stages$shift, 2),
+      toWidth = _stages$shift2[0],
+      toHeight = _stages$shift2[1];
+
+  var isLastStage = stages.length === 0; // Optimization for legacy filters -
+  // only use user-defined quality for the last stage,
+  // use simpler (Hamming) filter for the first stages where
+  // scale factor is large enough (more than 2-3)
+  //
+  // For advanced filters (mks2013 and custom) - skip optimization,
+  // because need to apply sharpening every time
+
+  var filter;
+  if (isLastStage || filter_info.q2f.indexOf(opts.filter) < 0) filter = opts.filter;else if (opts.filter === 'box') filter = 'box';else filter = 'hamming';
+  opts = assign({}, opts, {
+    toWidth: toWidth,
+    toHeight: toHeight,
+    filter: filter
+  });
+  var tmpCanvas;
+
+  if (!isLastStage) {
+    // create temporary canvas
+    tmpCanvas = this.options.createCanvas(toWidth, toHeight);
+  }
+
+  return this.__tileAndResize(from, isLastStage ? to : tmpCanvas, opts).then(function () {
+    if (isLastStage) return to;
+    opts.width = toWidth;
+    opts.height = toHeight;
+    return _this4.__processStages(stages, tmpCanvas, to, opts);
+  }).then(function (res) {
+    if (tmpCanvas) {
+      // Safari 12 workaround
+      // https://github.com/nodeca/pica/issues/199
+      tmpCanvas.width = tmpCanvas.height = 0;
+    }
+
+    return res;
+  });
+};
+
+Pica.prototype.__resizeViaCreateImageBitmap = function (from, to, opts) {
+  var _this5 = this;
+
+  var toCtx = to.getContext('2d');
+  this.debug('Resize via createImageBitmap()');
+  return createImageBitmap(from, {
+    resizeWidth: opts.toWidth,
+    resizeHeight: opts.toHeight,
+    resizeQuality: utils.cib_quality_name(filter_info.f2q[opts.filter])
+  }).then(function (imageBitmap) {
+    if (opts.canceled) return opts.cancelToken; // if no unsharp - draw directly to output canvas
+
+    if (!opts.unsharpAmount) {
+      toCtx.drawImage(imageBitmap, 0, 0);
+      imageBitmap.close();
+      toCtx = null;
+
+      _this5.debug('Finished!');
+
+      return to;
+    }
+
+    _this5.debug('Unsharp result');
+
+    var tmpCanvas = _this5.options.createCanvas(opts.toWidth, opts.toHeight);
+
+    var tmpCtx = tmpCanvas.getContext('2d');
+    tmpCtx.drawImage(imageBitmap, 0, 0);
+    imageBitmap.close();
+    var iData = tmpCtx.getImageData(0, 0, opts.toWidth, opts.toHeight);
+
+    _this5.__mathlib.unsharp_mask(iData.data, opts.toWidth, opts.toHeight, opts.unsharpAmount, opts.unsharpRadius, opts.unsharpThreshold);
+
+    toCtx.putImageData(iData, 0, 0); // Safari 12 workaround
+    // https://github.com/nodeca/pica/issues/199
+
+    tmpCanvas.width = tmpCanvas.height = 0;
+    iData = tmpCtx = tmpCanvas = toCtx = null;
+
+    _this5.debug('Finished!');
+
+    return to;
+  });
+};
+
+Pica.prototype.resize = function (from, to, options) {
+  var _this6 = this;
+
+  this.debug('Start resize...');
+  var opts = assign({}, DEFAULT_RESIZE_OPTS);
+
+  if (!isNaN(options)) {
+    opts = assign(opts, {
+      quality: options
+    });
+  } else if (options) {
+    opts = assign(opts, options);
+  }
+
+  opts.toWidth = to.width;
+  opts.toHeight = to.height;
+  opts.width = from.naturalWidth || from.width;
+  opts.height = from.naturalHeight || from.height; // Legacy `.quality` option
+
+  if (Object.prototype.hasOwnProperty.call(opts, 'quality')) {
+    if (opts.quality < 0 || opts.quality > 3) {
+      throw new Error("Pica: .quality should be [0..3], got ".concat(opts.quality));
+    }
+
+    opts.filter = filter_info.q2f[opts.quality];
+  } // Prevent stepper from infinite loop
+
+
+  if (to.width === 0 || to.height === 0) {
+    return Promise.reject(new Error("Invalid output size: ".concat(to.width, "x").concat(to.height)));
+  }
+
+  if (opts.unsharpRadius > 2) opts.unsharpRadius = 2;
+  opts.canceled = false;
+
+  if (opts.cancelToken) {
+    // Wrap cancelToken to avoid successive resolve & set flag
+    opts.cancelToken = opts.cancelToken.then(function (data) {
+      opts.canceled = true;
+      throw data;
+    }, function (err) {
+      opts.canceled = true;
+      throw err;
+    });
+  }
+
+  var DEST_TILE_BORDER = 3; // Max possible filter window size
+
+  opts.__destTileBorder = Math.ceil(Math.max(DEST_TILE_BORDER, 2.5 * opts.unsharpRadius | 0));
+  return this.init().then(function () {
+    if (opts.canceled) return opts.cancelToken; // if createImageBitmap supports resize, just do it and return
+
+    if (_this6.features.cib) {
+      if (filter_info.q2f.indexOf(opts.filter) >= 0) {
+        return _this6.__resizeViaCreateImageBitmap(from, to, opts);
+      }
+
+      _this6.debug('cib is enabled, but not supports provided filter, fallback to manual math');
+    }
+
+    if (!CAN_USE_CANVAS_GET_IMAGE_DATA) {
+      var err = new Error('Pica: cannot use getImageData on canvas, ' + "make sure fingerprinting protection isn't enabled");
+      err.code = 'ERR_GET_IMAGE_DATA';
+      throw err;
+    } //
+    // No easy way, let's resize manually via arrays
+    //
+
+
+    var stages = createStages(opts.width, opts.height, opts.toWidth, opts.toHeight, _this6.options.tile, opts.__destTileBorder);
+    return _this6.__processStages(stages, from, to, opts);
+  });
+}; // RGBA buffer resize
+//
+
+
+Pica.prototype.resizeBuffer = function (options) {
+  var _this7 = this;
+
+  var opts = assign({}, DEFAULT_RESIZE_OPTS, options); // Legacy `.quality` option
+
+  if (Object.prototype.hasOwnProperty.call(opts, 'quality')) {
+    if (opts.quality < 0 || opts.quality > 3) {
+      throw new Error("Pica: .quality should be [0..3], got ".concat(opts.quality));
+    }
+
+    opts.filter = filter_info.q2f[opts.quality];
+  }
+
+  return this.init().then(function () {
+    return _this7.__mathlib.resizeAndUnsharp(opts);
+  });
+};
+
+Pica.prototype.toBlob = function (canvas, mimeType, quality) {
+  mimeType = mimeType || 'image/png';
+  return new Promise(function (resolve) {
+    if (canvas.toBlob) {
+      canvas.toBlob(function (blob) {
+        return resolve(blob);
+      }, mimeType, quality);
+      return;
+    }
+
+    if (canvas.convertToBlob) {
+      resolve(canvas.convertToBlob({
+        type: mimeType,
+        quality: quality
+      }));
+      return;
+    } // Fallback for old browsers
+
+
+    var asString = atob(canvas.toDataURL(mimeType, quality).split(',')[1]);
+    var len = asString.length;
+    var asBuffer = new Uint8Array(len);
+
+    for (var i = 0; i < len; i++) {
+      asBuffer[i] = asString.charCodeAt(i);
+    }
+
+    resolve(new Blob([asBuffer], {
+      type: mimeType
+    }));
+  });
+};
+
+Pica.prototype.debug = function () {};
+
+module.exports = Pica;
+
+},{"./lib/mathlib":1,"./lib/mm_resize/resize_filter_info":7,"./lib/pool":13,"./lib/stepper":14,"./lib/tiler":15,"./lib/utils":16,"./lib/worker":17,"object-assign":22,"webworkify":23}],1:[function(_dereq_,module,exports){
 // Collection of math functions
 //
 // 1. Combine components together
@@ -1294,7 +1986,12 @@ module.exports = function () {
     if (!mathLib) mathLib = new MathLib(ev.data.features); // Use multimath's sync auto-init. Avoid Promise use in old browsers,
     // because polyfills are not propagated to webworker.
 
-    var data = mathLib.resizeAndUnsharp(tileOpts);
+    var data = mathLib.resizeAndUnsharp(tileOpts); // In a new Chrome version (104.*) a memory leak was introduced where the transferred ArrayBuffer does not get GCed.
+    // https://bugs.chromium.org/p/chromium/issues/detail?id=1356332&q=transferable&can=2
+    // To work around this, we just send it back again. Then GC kicks in as it should:
+    // https://stackoverflow.com/questions/72480480/memory-leak-javascript-passing-array-buffer-to-web-worker-using-transferable
+
+    var transfer = [tileOpts.src.buffer];
 
     if (returnBitmap) {
       var toImageData = new ImageData(new Uint8ClampedArray(data), tileOpts.toWidth, tileOpts.toHeight);
@@ -1306,14 +2003,16 @@ module.exports = function () {
       _ctx.putImageData(toImageData, 0, 0);
 
       createImageBitmap(_canvas).then(function (bitmap) {
+        transfer.push(bitmap);
         postMessage({
           bitmap: bitmap
-        }, [bitmap]);
+        }, transfer);
       });
     } else {
+      transfer.push(data.buffer);
       postMessage({
         data: data
-      }, [data.buffer]);
+      }, transfer);
     }
   };
 };
@@ -1859,693 +2558,5 @@ module.exports = function (fn, options) {
     return worker;
 };
 
-},{}],"/index.js":[function(_dereq_,module,exports){
-'use strict';
-
-function _slicedToArray(arr, i) { return _arrayWithHoles(arr) || _iterableToArrayLimit(arr, i) || _unsupportedIterableToArray(arr, i) || _nonIterableRest(); }
-
-function _nonIterableRest() { throw new TypeError("Invalid attempt to destructure non-iterable instance.\nIn order to be iterable, non-array objects must have a [Symbol.iterator]() method."); }
-
-function _unsupportedIterableToArray(o, minLen) { if (!o) return; if (typeof o === "string") return _arrayLikeToArray(o, minLen); var n = Object.prototype.toString.call(o).slice(8, -1); if (n === "Object" && o.constructor) n = o.constructor.name; if (n === "Map" || n === "Set") return Array.from(o); if (n === "Arguments" || /^(?:Ui|I)nt(?:8|16|32)(?:Clamped)?Array$/.test(n)) return _arrayLikeToArray(o, minLen); }
-
-function _arrayLikeToArray(arr, len) { if (len == null || len > arr.length) len = arr.length; for (var i = 0, arr2 = new Array(len); i < len; i++) { arr2[i] = arr[i]; } return arr2; }
-
-function _iterableToArrayLimit(arr, i) { var _i = arr == null ? null : typeof Symbol !== "undefined" && arr[Symbol.iterator] || arr["@@iterator"]; if (_i == null) return; var _arr = []; var _n = true; var _d = false; var _s, _e; try { for (_i = _i.call(arr); !(_n = (_s = _i.next()).done); _n = true) { _arr.push(_s.value); if (i && _arr.length === i) break; } } catch (err) { _d = true; _e = err; } finally { try { if (!_n && _i["return"] != null) _i["return"](); } finally { if (_d) throw _e; } } return _arr; }
-
-function _arrayWithHoles(arr) { if (Array.isArray(arr)) return arr; }
-
-var assign = _dereq_('object-assign');
-
-var webworkify = _dereq_('webworkify');
-
-var MathLib = _dereq_('./lib/mathlib');
-
-var Pool = _dereq_('./lib/pool');
-
-var utils = _dereq_('./lib/utils');
-
-var worker = _dereq_('./lib/worker');
-
-var createStages = _dereq_('./lib/stepper');
-
-var createRegions = _dereq_('./lib/tiler');
-
-var filter_info = _dereq_('./lib/mm_resize/resize_filter_info'); // Deduplicate pools & limiters with the same configs
-// when user creates multiple pica instances.
-
-
-var singletones = {};
-var NEED_SAFARI_FIX = false;
-
-try {
-  if (typeof navigator !== 'undefined' && navigator.userAgent) {
-    NEED_SAFARI_FIX = navigator.userAgent.indexOf('Safari') >= 0;
-  }
-} catch (e) {}
-
-var concurrency = 1;
-
-if (typeof navigator !== 'undefined') {
-  concurrency = Math.min(navigator.hardwareConcurrency || 1, 4);
-}
-
-var DEFAULT_PICA_OPTS = {
-  tile: 1024,
-  concurrency: concurrency,
-  features: ['js', 'wasm', 'ww'],
-  idle: 2000,
-  createCanvas: function createCanvas(width, height) {
-    var tmpCanvas = document.createElement('canvas');
-    tmpCanvas.width = width;
-    tmpCanvas.height = height;
-    return tmpCanvas;
-  }
-};
-var DEFAULT_RESIZE_OPTS = {
-  filter: 'mks2013',
-  unsharpAmount: 0,
-  unsharpRadius: 0.0,
-  unsharpThreshold: 0
-};
-var CAN_NEW_IMAGE_DATA = false;
-var CAN_CREATE_IMAGE_BITMAP = false;
-var CAN_USE_CANVAS_GET_IMAGE_DATA = false;
-var CAN_USE_OFFSCREEN_CANVAS = false;
-var CAN_USE_CIB_REGION_FOR_IMAGE = false;
-
-function workerFabric() {
-  return {
-    value: webworkify(worker),
-    destroy: function destroy() {
-      this.value.terminate();
-
-      if (typeof window !== 'undefined') {
-        var url = window.URL || window.webkitURL || window.mozURL || window.msURL;
-
-        if (url && url.revokeObjectURL && this.value.objectURL) {
-          url.revokeObjectURL(this.value.objectURL);
-        }
-      }
-    }
-  };
-} ////////////////////////////////////////////////////////////////////////////////
-// API methods
-
-
-function Pica(options) {
-  if (!(this instanceof Pica)) return new Pica(options);
-  this.options = assign({}, DEFAULT_PICA_OPTS, options || {});
-  var limiter_key = "lk_".concat(this.options.concurrency); // Share limiters to avoid multiple parallel workers when user creates
-  // multiple pica instances.
-
-  this.__limit = singletones[limiter_key] || utils.limiter(this.options.concurrency);
-  if (!singletones[limiter_key]) singletones[limiter_key] = this.__limit; // List of supported features, according to options & browser/node.js
-
-  this.features = {
-    js: false,
-    // pure JS implementation, can be disabled for testing
-    wasm: false,
-    // webassembly implementation for heavy functions
-    cib: false,
-    // resize via createImageBitmap (only FF at this moment)
-    ww: false // webworkers
-
-  };
-  this.__workersPool = null; // Store requested features for webworkers
-
-  this.__requested_features = [];
-  this.__mathlib = null;
-}
-
-Pica.prototype.init = function () {
-  var _this = this;
-
-  if (this.__initPromise) return this.__initPromise; // Test if we can create ImageData without canvas and memory copy
-
-  if (typeof ImageData !== 'undefined' && typeof Uint8ClampedArray !== 'undefined') {
-    try {
-      /* eslint-disable no-new */
-      new ImageData(new Uint8ClampedArray(400), 10, 10);
-      CAN_NEW_IMAGE_DATA = true;
-    } catch (__) {}
-  } // ImageBitmap can be effective in 2 places:
-  //
-  // 1. Threaded jpeg unpack (basic)
-  // 2. Built-in resize (blocked due problem in chrome, see issue #89)
-  //
-  // For basic use we also need ImageBitmap wo support .close() method,
-  // see https://developer.mozilla.org/ru/docs/Web/API/ImageBitmap
-
-
-  if (typeof ImageBitmap !== 'undefined') {
-    if (ImageBitmap.prototype && ImageBitmap.prototype.close) {
-      CAN_CREATE_IMAGE_BITMAP = true;
-    } else {
-      this.debug('ImageBitmap does not support .close(), disabled');
-    }
-  }
-
-  var features = this.options.features.slice();
-
-  if (features.indexOf('all') >= 0) {
-    features = ['cib', 'wasm', 'js', 'ww'];
-  }
-
-  this.__requested_features = features;
-  this.__mathlib = new MathLib(features); // Check WebWorker support if requested
-
-  if (features.indexOf('ww') >= 0) {
-    if (typeof window !== 'undefined' && 'Worker' in window) {
-      // IE <= 11 don't allow to create webworkers from string. We should check it.
-      // https://connect.microsoft.com/IE/feedback/details/801810/web-workers-from-blob-urls-in-ie-10-and-11
-      try {
-        var wkr = _dereq_('webworkify')(function () {});
-
-        wkr.terminate();
-        this.features.ww = true; // pool uniqueness depends on pool config + webworker config
-
-        var wpool_key = "wp_".concat(JSON.stringify(this.options));
-
-        if (singletones[wpool_key]) {
-          this.__workersPool = singletones[wpool_key];
-        } else {
-          this.__workersPool = new Pool(workerFabric, this.options.idle);
-          singletones[wpool_key] = this.__workersPool;
-        }
-      } catch (__) {}
-    }
-  }
-
-  var initMath = this.__mathlib.init().then(function (mathlib) {
-    // Copy detected features
-    assign(_this.features, mathlib.features);
-  });
-
-  var checkCibResize;
-
-  if (!CAN_CREATE_IMAGE_BITMAP) {
-    checkCibResize = Promise.resolve(false);
-  } else {
-    checkCibResize = utils.cib_support(this.options.createCanvas).then(function (status) {
-      if (_this.features.cib && features.indexOf('cib') < 0) {
-        _this.debug('createImageBitmap() resize supported, but disabled by config');
-
-        return;
-      }
-
-      if (features.indexOf('cib') >= 0) _this.features.cib = status;
-    });
-  }
-
-  CAN_USE_CANVAS_GET_IMAGE_DATA = utils.can_use_canvas(this.options.createCanvas);
-  var checkOffscreenCanvas;
-
-  if (CAN_CREATE_IMAGE_BITMAP && CAN_NEW_IMAGE_DATA && features.indexOf('ww') !== -1) {
-    checkOffscreenCanvas = utils.worker_offscreen_canvas_support();
-  } else {
-    checkOffscreenCanvas = Promise.resolve(false);
-  }
-
-  checkOffscreenCanvas = checkOffscreenCanvas.then(function (result) {
-    CAN_USE_OFFSCREEN_CANVAS = result;
-  }); // we use createImageBitmap to crop image data and pass it to workers,
-  // so need to check whether function works correctly;
-  // https://bugs.chromium.org/p/chromium/issues/detail?id=1220671
-
-  var checkCibRegion = utils.cib_can_use_region().then(function (result) {
-    CAN_USE_CIB_REGION_FOR_IMAGE = result;
-  }); // Init math lib. That's async because can load some
-
-  this.__initPromise = Promise.all([initMath, checkCibResize, checkOffscreenCanvas, checkCibRegion]).then(function () {
-    return _this;
-  });
-  return this.__initPromise;
-}; // Call resizer in webworker or locally, depending on config
-
-
-Pica.prototype.__invokeResize = function (tileOpts, opts) {
-  var _this2 = this;
-
-  // Share cache between calls:
-  //
-  // - wasm instance
-  // - wasm memory object
-  //
-  opts.__mathCache = opts.__mathCache || {};
-  return Promise.resolve().then(function () {
-    if (!_this2.features.ww) {
-      // not possible to have ImageBitmap here if user disabled WW
-      return {
-        data: _this2.__mathlib.resizeAndUnsharp(tileOpts, opts.__mathCache)
-      };
-    }
-
-    return new Promise(function (resolve, reject) {
-      var w = _this2.__workersPool.acquire();
-
-      if (opts.cancelToken) opts.cancelToken["catch"](function (err) {
-        return reject(err);
-      });
-
-      w.value.onmessage = function (ev) {
-        w.release();
-        if (ev.data.err) reject(ev.data.err);else resolve(ev.data);
-      };
-
-      var transfer = [];
-      if (tileOpts.src) transfer.push(tileOpts.src.buffer);
-      if (tileOpts.srcBitmap) transfer.push(tileOpts.srcBitmap);
-      w.value.postMessage({
-        opts: tileOpts,
-        features: _this2.__requested_features,
-        preload: {
-          wasm_nodule: _this2.__mathlib.__
-        }
-      }, transfer);
-    });
-  });
-}; // this function can return promise if createImageBitmap is used
-
-
-Pica.prototype.__extractTileData = function (tile, from, opts, stageEnv, extractTo) {
-  if (this.features.ww && CAN_USE_OFFSCREEN_CANVAS && ( // createImageBitmap doesn't work for images (Image, ImageBitmap) with Exif orientation in Chrome,
-  // can use canvas because canvas doesn't have orientation;
-  // see https://bugs.chromium.org/p/chromium/issues/detail?id=1220671
-  utils.isCanvas(from) || CAN_USE_CIB_REGION_FOR_IMAGE)) {
-    this.debug('Create tile for OffscreenCanvas');
-    return createImageBitmap(stageEnv.srcImageBitmap || from, tile.x, tile.y, tile.width, tile.height).then(function (bitmap) {
-      extractTo.srcBitmap = bitmap;
-      return extractTo;
-    });
-  } // Extract tile RGBA buffer, depending on input type
-
-
-  if (utils.isCanvas(from)) {
-    if (!stageEnv.srcCtx) stageEnv.srcCtx = from.getContext('2d'); // If input is Canvas - extract region data directly
-
-    this.debug('Get tile pixel data');
-    extractTo.src = stageEnv.srcCtx.getImageData(tile.x, tile.y, tile.width, tile.height).data;
-    return extractTo;
-  } // If input is Image or decoded to ImageBitmap,
-  // draw region to temporary canvas and extract data from it
-  //
-  // Note! Attempt to reuse this canvas causes significant slowdown in chrome
-  //
-
-
-  this.debug('Draw tile imageBitmap/image to temporary canvas');
-  var tmpCanvas = this.options.createCanvas(tile.width, tile.height);
-  var tmpCtx = tmpCanvas.getContext('2d');
-  tmpCtx.globalCompositeOperation = 'copy';
-  tmpCtx.drawImage(stageEnv.srcImageBitmap || from, tile.x, tile.y, tile.width, tile.height, 0, 0, tile.width, tile.height);
-  this.debug('Get tile pixel data');
-  extractTo.src = tmpCtx.getImageData(0, 0, tile.width, tile.height).data; // Safari 12 workaround
-  // https://github.com/nodeca/pica/issues/199
-
-  tmpCanvas.width = tmpCanvas.height = 0;
-  return extractTo;
-};
-
-Pica.prototype.__landTileData = function (tile, result, stageEnv) {
-  var toImageData;
-  this.debug('Convert raw rgba tile result to ImageData');
-
-  if (result.bitmap) {
-    stageEnv.toCtx.drawImage(result.bitmap, tile.toX, tile.toY);
-    return null;
-  }
-
-  if (CAN_NEW_IMAGE_DATA) {
-    // this branch is for modern browsers
-    // If `new ImageData()` & Uint8ClampedArray suported
-    toImageData = new ImageData(new Uint8ClampedArray(result.data), tile.toWidth, tile.toHeight);
-  } else {
-    // fallback for `node-canvas` and old browsers
-    // (IE11 has ImageData but does not support `new ImageData()`)
-    toImageData = stageEnv.toCtx.createImageData(tile.toWidth, tile.toHeight);
-
-    if (toImageData.data.set) {
-      toImageData.data.set(result.data);
-    } else {
-      // IE9 don't have `.set()`
-      for (var i = toImageData.data.length - 1; i >= 0; i--) {
-        toImageData.data[i] = result.data[i];
-      }
-    }
-  }
-
-  this.debug('Draw tile');
-
-  if (NEED_SAFARI_FIX) {
-    // Safari draws thin white stripes between tiles without this fix
-    stageEnv.toCtx.putImageData(toImageData, tile.toX, tile.toY, tile.toInnerX - tile.toX, tile.toInnerY - tile.toY, tile.toInnerWidth + 1e-5, tile.toInnerHeight + 1e-5);
-  } else {
-    stageEnv.toCtx.putImageData(toImageData, tile.toX, tile.toY, tile.toInnerX - tile.toX, tile.toInnerY - tile.toY, tile.toInnerWidth, tile.toInnerHeight);
-  }
-
-  return null;
-};
-
-Pica.prototype.__tileAndResize = function (from, to, opts) {
-  var _this3 = this;
-
-  var stageEnv = {
-    srcCtx: null,
-    srcImageBitmap: null,
-    isImageBitmapReused: false,
-    toCtx: null
-  };
-
-  var processTile = function processTile(tile) {
-    return _this3.__limit(function () {
-      if (opts.canceled) return opts.cancelToken;
-      var tileOpts = {
-        width: tile.width,
-        height: tile.height,
-        toWidth: tile.toWidth,
-        toHeight: tile.toHeight,
-        scaleX: tile.scaleX,
-        scaleY: tile.scaleY,
-        offsetX: tile.offsetX,
-        offsetY: tile.offsetY,
-        filter: opts.filter,
-        unsharpAmount: opts.unsharpAmount,
-        unsharpRadius: opts.unsharpRadius,
-        unsharpThreshold: opts.unsharpThreshold
-      };
-
-      _this3.debug('Invoke resize math');
-
-      return Promise.resolve(tileOpts).then(function (tileOpts) {
-        return _this3.__extractTileData(tile, from, opts, stageEnv, tileOpts);
-      }).then(function (tileOpts) {
-        _this3.debug('Invoke resize math');
-
-        return _this3.__invokeResize(tileOpts, opts);
-      }).then(function (result) {
-        if (opts.canceled) return opts.cancelToken;
-        stageEnv.srcImageData = null;
-        return _this3.__landTileData(tile, result, stageEnv);
-      });
-    });
-  }; // Need to normalize data source first. It can be canvas or image.
-  // If image - try to decode in background if possible
-
-
-  return Promise.resolve().then(function () {
-    stageEnv.toCtx = to.getContext('2d');
-    if (utils.isCanvas(from)) return null;
-
-    if (utils.isImageBitmap(from)) {
-      stageEnv.srcImageBitmap = from;
-      stageEnv.isImageBitmapReused = true;
-      return null;
-    }
-
-    if (utils.isImage(from)) {
-      // try do decode image in background for faster next operations;
-      // if we're using offscreen canvas, cib is called per tile, so not needed here
-      if (!CAN_CREATE_IMAGE_BITMAP) return null;
-
-      _this3.debug('Decode image via createImageBitmap');
-
-      return createImageBitmap(from).then(function (imageBitmap) {
-        stageEnv.srcImageBitmap = imageBitmap;
-      }) // Suppress error to use fallback, if method fails
-      // https://github.com/nodeca/pica/issues/190
-
-      /* eslint-disable no-unused-vars */
-      ["catch"](function (e) {
-        return null;
-      });
-    }
-
-    throw new Error('Pica: ".from" should be Image, Canvas or ImageBitmap');
-  }).then(function () {
-    if (opts.canceled) return opts.cancelToken;
-
-    _this3.debug('Calculate tiles'); //
-    // Here we are with "normalized" source,
-    // follow to tiling
-    //
-
-
-    var regions = createRegions({
-      width: opts.width,
-      height: opts.height,
-      srcTileSize: _this3.options.tile,
-      toWidth: opts.toWidth,
-      toHeight: opts.toHeight,
-      destTileBorder: opts.__destTileBorder
-    });
-    var jobs = regions.map(function (tile) {
-      return processTile(tile);
-    });
-
-    function cleanup(stageEnv) {
-      if (stageEnv.srcImageBitmap) {
-        if (!stageEnv.isImageBitmapReused) stageEnv.srcImageBitmap.close();
-        stageEnv.srcImageBitmap = null;
-      }
-    }
-
-    _this3.debug('Process tiles');
-
-    return Promise.all(jobs).then(function () {
-      _this3.debug('Finished!');
-
-      cleanup(stageEnv);
-      return to;
-    }, function (err) {
-      cleanup(stageEnv);
-      throw err;
-    });
-  });
-};
-
-Pica.prototype.__processStages = function (stages, from, to, opts) {
-  var _this4 = this;
-
-  if (opts.canceled) return opts.cancelToken;
-
-  var _stages$shift = stages.shift(),
-      _stages$shift2 = _slicedToArray(_stages$shift, 2),
-      toWidth = _stages$shift2[0],
-      toHeight = _stages$shift2[1];
-
-  var isLastStage = stages.length === 0; // Optimization for legacy filters -
-  // only use user-defined quality for the last stage,
-  // use simpler (Hamming) filter for the first stages where
-  // scale factor is large enough (more than 2-3)
-  //
-  // For advanced filters (mks2013 and custom) - skip optimization,
-  // because need to apply sharpening every time
-
-  var filter;
-  if (isLastStage || filter_info.q2f.indexOf(opts.filter) < 0) filter = opts.filter;else if (opts.filter === 'box') filter = 'box';else filter = 'hamming';
-  opts = assign({}, opts, {
-    toWidth: toWidth,
-    toHeight: toHeight,
-    filter: filter
-  });
-  var tmpCanvas;
-
-  if (!isLastStage) {
-    // create temporary canvas
-    tmpCanvas = this.options.createCanvas(toWidth, toHeight);
-  }
-
-  return this.__tileAndResize(from, isLastStage ? to : tmpCanvas, opts).then(function () {
-    if (isLastStage) return to;
-    opts.width = toWidth;
-    opts.height = toHeight;
-    return _this4.__processStages(stages, tmpCanvas, to, opts);
-  }).then(function (res) {
-    if (tmpCanvas) {
-      // Safari 12 workaround
-      // https://github.com/nodeca/pica/issues/199
-      tmpCanvas.width = tmpCanvas.height = 0;
-    }
-
-    return res;
-  });
-};
-
-Pica.prototype.__resizeViaCreateImageBitmap = function (from, to, opts) {
-  var _this5 = this;
-
-  var toCtx = to.getContext('2d');
-  this.debug('Resize via createImageBitmap()');
-  return createImageBitmap(from, {
-    resizeWidth: opts.toWidth,
-    resizeHeight: opts.toHeight,
-    resizeQuality: utils.cib_quality_name(filter_info.f2q[opts.filter])
-  }).then(function (imageBitmap) {
-    if (opts.canceled) return opts.cancelToken; // if no unsharp - draw directly to output canvas
-
-    if (!opts.unsharpAmount) {
-      toCtx.drawImage(imageBitmap, 0, 0);
-      imageBitmap.close();
-      toCtx = null;
-
-      _this5.debug('Finished!');
-
-      return to;
-    }
-
-    _this5.debug('Unsharp result');
-
-    var tmpCanvas = _this5.options.createCanvas(opts.toWidth, opts.toHeight);
-
-    var tmpCtx = tmpCanvas.getContext('2d');
-    tmpCtx.drawImage(imageBitmap, 0, 0);
-    imageBitmap.close();
-    var iData = tmpCtx.getImageData(0, 0, opts.toWidth, opts.toHeight);
-
-    _this5.__mathlib.unsharp_mask(iData.data, opts.toWidth, opts.toHeight, opts.unsharpAmount, opts.unsharpRadius, opts.unsharpThreshold);
-
-    toCtx.putImageData(iData, 0, 0); // Safari 12 workaround
-    // https://github.com/nodeca/pica/issues/199
-
-    tmpCanvas.width = tmpCanvas.height = 0;
-    iData = tmpCtx = tmpCanvas = toCtx = null;
-
-    _this5.debug('Finished!');
-
-    return to;
-  });
-};
-
-Pica.prototype.resize = function (from, to, options) {
-  var _this6 = this;
-
-  this.debug('Start resize...');
-  var opts = assign({}, DEFAULT_RESIZE_OPTS);
-
-  if (!isNaN(options)) {
-    opts = assign(opts, {
-      quality: options
-    });
-  } else if (options) {
-    opts = assign(opts, options);
-  }
-
-  opts.toWidth = to.width;
-  opts.toHeight = to.height;
-  opts.width = from.naturalWidth || from.width;
-  opts.height = from.naturalHeight || from.height; // Legacy `.quality` option
-
-  if (Object.prototype.hasOwnProperty.call(opts, 'quality')) {
-    if (opts.quality < 0 || opts.quality > 3) {
-      throw new Error("Pica: .quality should be [0..3], got ".concat(opts.quality));
-    }
-
-    opts.filter = filter_info.q2f[opts.quality];
-  } // Prevent stepper from infinite loop
-
-
-  if (to.width === 0 || to.height === 0) {
-    return Promise.reject(new Error("Invalid output size: ".concat(to.width, "x").concat(to.height)));
-  }
-
-  if (opts.unsharpRadius > 2) opts.unsharpRadius = 2;
-  opts.canceled = false;
-
-  if (opts.cancelToken) {
-    // Wrap cancelToken to avoid successive resolve & set flag
-    opts.cancelToken = opts.cancelToken.then(function (data) {
-      opts.canceled = true;
-      throw data;
-    }, function (err) {
-      opts.canceled = true;
-      throw err;
-    });
-  }
-
-  var DEST_TILE_BORDER = 3; // Max possible filter window size
-
-  opts.__destTileBorder = Math.ceil(Math.max(DEST_TILE_BORDER, 2.5 * opts.unsharpRadius | 0));
-  return this.init().then(function () {
-    if (opts.canceled) return opts.cancelToken; // if createImageBitmap supports resize, just do it and return
-
-    if (_this6.features.cib) {
-      if (filter_info.q2f.indexOf(opts.filter) >= 0) {
-        return _this6.__resizeViaCreateImageBitmap(from, to, opts);
-      }
-
-      _this6.debug('cib is enabled, but not supports provided filter, fallback to manual math');
-    }
-
-    if (!CAN_USE_CANVAS_GET_IMAGE_DATA) {
-      var err = new Error('Pica: cannot use getImageData on canvas, ' + "make sure fingerprinting protection isn't enabled");
-      err.code = 'ERR_GET_IMAGE_DATA';
-      throw err;
-    } //
-    // No easy way, let's resize manually via arrays
-    //
-
-
-    var stages = createStages(opts.width, opts.height, opts.toWidth, opts.toHeight, _this6.options.tile, opts.__destTileBorder);
-    return _this6.__processStages(stages, from, to, opts);
-  });
-}; // RGBA buffer resize
-//
-
-
-Pica.prototype.resizeBuffer = function (options) {
-  var _this7 = this;
-
-  var opts = assign({}, DEFAULT_RESIZE_OPTS, options); // Legacy `.quality` option
-
-  if (Object.prototype.hasOwnProperty.call(opts, 'quality')) {
-    if (opts.quality < 0 || opts.quality > 3) {
-      throw new Error("Pica: .quality should be [0..3], got ".concat(opts.quality));
-    }
-
-    opts.filter = filter_info.q2f[opts.quality];
-  }
-
-  return this.init().then(function () {
-    return _this7.__mathlib.resizeAndUnsharp(opts);
-  });
-};
-
-Pica.prototype.toBlob = function (canvas, mimeType, quality) {
-  mimeType = mimeType || 'image/png';
-  return new Promise(function (resolve) {
-    if (canvas.toBlob) {
-      canvas.toBlob(function (blob) {
-        return resolve(blob);
-      }, mimeType, quality);
-      return;
-    }
-
-    if (canvas.convertToBlob) {
-      resolve(canvas.convertToBlob({
-        type: mimeType,
-        quality: quality
-      }));
-      return;
-    } // Fallback for old browsers
-
-
-    var asString = atob(canvas.toDataURL(mimeType, quality).split(',')[1]);
-    var len = asString.length;
-    var asBuffer = new Uint8Array(len);
-
-    for (var i = 0; i < len; i++) {
-      asBuffer[i] = asString.charCodeAt(i);
-    }
-
-    resolve(new Blob([asBuffer], {
-      type: mimeType
-    }));
-  });
-};
-
-Pica.prototype.debug = function () {};
-
-module.exports = Pica;
-
-},{"./lib/mathlib":1,"./lib/mm_resize/resize_filter_info":7,"./lib/pool":13,"./lib/stepper":14,"./lib/tiler":15,"./lib/utils":16,"./lib/worker":17,"object-assign":22,"webworkify":23}]},{},[])("/index.js")
+},{}]},{},[])("/index.js")
 });
